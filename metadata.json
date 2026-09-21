@@ -1,0 +1,10 @@
+{
+  "name": "Warehouse Management Inventory",
+  "description": "Warehouse Management Inventory - Sistem Manajemen Inventaris Gudang dengan Kartu Barang Digital (Bin Card), QR Code Scanner, Kontrol Mutasi, dan Deteksi Stok Kritis.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

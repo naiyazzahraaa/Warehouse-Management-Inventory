@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "items": {
+      "description": "Daftar fisik barang inventaris gudang dan saldo stok real-time",
+      "properties": {
+        "material_code": {
+          "type": "string",
+          "description": "Nomor material 18 digit standar ERP (contoh: 031007000000000235)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Nama barang dan spesifikasi teknis"
+        },
+        "category": {
+          "type": "string",
+          "description": "Kategori barang gudang"
+        },
+        "description": {
+          "type": "string",
+          "description": "Keterangan teknis barang"
+        },
+        "current_stock": {
+          "type": "number",
+          "description": "Saldo stok fisik barang saat ini"
+        },
+        "min_stock": {
+          "type": "number",
+          "description": "Batas minimum stok pengingat reorder"
+        },
+        "location": {
+          "type": "string",
+          "description": "Kode lokasi rak BIN standar (contoh: TN 1.02.03.04B)"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Satuan fisik barang (pcs, unit, box, dll)"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Waktu pembuatan barang (ISO timestamp)"
+        },
+        "updated_at": {
+          "type": "string",
+          "description": "Waktu update terakhir"
+        },
+        "updated_by": {
+          "type": "string",
+          "description": "Petugas yang terakhir mengubah"
+        }
+      },
+      "required": ["material_code", "name", "category", "current_stock", "location", "unit"]
+    },
+    "transactions": {
+      "description": "Buku mutasi transaksi stok masuk, keluar, dan penyesuaian opname (Digital Bin Card Ledger)",
+      "properties": {
+        "item_id": {
+          "type": "string",
+          "description": "ID referensi barang"
+        },
+        "type": {
+          "type": "string",
+          "description": "Tipe mutasi: IN, OUT, atau ADJUST"
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Jumlah fisik yang dimutasi"
+        },
+        "balance_after": {
+          "type": "number",
+          "description": "Saldo akhir stok setelah mutasi dibukukan"
+        },
+        "reference_no": {
+          "type": "string",
+          "description": "Nomor referensi dokumen (PO, DO, Surat Jalan, dll)"
+        },
+        "operator_name": {
+          "type": "string",
+          "description": "Nama petugas pelaksana transaksi di lapangan"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Catatan keterangan mutasi fisik"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "Waktu transaksi dibukukan (ISO timestamp)"
+        }
+      },
+      "required": ["item_id", "type", "quantity", "balance_after", "created_at"]
+    }
+  }
+}

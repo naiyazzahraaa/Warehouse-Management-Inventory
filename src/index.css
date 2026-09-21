@@ -1,0 +1,185 @@
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #F8FAFC;
+  --bg-secondary: #FFFFFF;
+  --text-primary: #0F172A;
+  --text-secondary: #334155;
+  --border-color: #CBD5E1;
+  --input-bg: #FFFFFF;
+  --input-text: #0F172A;
+
+  --text-color: #0F172A;
+  --text-color-muted: #334155;
+  
+  /* Navigation Variables - Accessible High Contrast */
+  --nav-text-active: #0f172a;
+  --nav-text-inactive: #475569;
+  --nav-bg-active: #e2e8f0;
+  --nav-bg-inactive: transparent;
+  --nav-scan-bg: #059669;
+  --nav-scan-text: #ffffff;
+  --nav-sync-bg: #ecfdf5;
+  --nav-sync-text: #064e3b;
+  --nav-sync-border: #a7f3d0;
+}
+
+/* Force Cross-Browser & Mobile Safari Rendering */
+body {
+  color: #0F172A;
+  background-color: #F8FAFC;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Pastikan elemen form & input memiliki teks gelap terbaca */
+input, select, textarea {
+  color: #0F172A;
+  background-color: #FFFFFF;
+}
+
+.text-muted {
+  color: #475569 !important;
+}
+
+/* Global placeholder and input contrast enhancements */
+input::placeholder, textarea::placeholder {
+  color: #64748b !important; /* High-contrast slate-500/400 for placeholders in light mode */
+  opacity: 1 !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  input::placeholder, textarea::placeholder {
+    color: #94a3b8 !important; /* Bright slate-400 for placeholders in dark mode */
+    opacity: 1 !important;
+  }
+}
+
+.dark input::placeholder, .dark textarea::placeholder,
+[data-theme="dark"] input::placeholder, [data-theme="dark"] textarea::placeholder {
+  color: #94a3b8 !important;
+  opacity: 1 !important;
+}
+
+.nav-link-text {
+  color: inherit !important;
+}
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html, body {
+    max-width: 100%;
+    width: 100%;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Cross-browser custom scrollbars (Firefox) */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+
+  /* Cross-browser custom scrollbars (Chrome, Safari, Edge, Opera) */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8;
+  }
+
+  /* Smooth momentum scrolling for iOS Safari */
+  .overflow-x-auto,
+  .overflow-y-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Prevent automatic zoom on input focus on iOS Safari */
+  @media screen and (max-width: 640px) {
+    input[type="text"],
+    input[type="number"],
+    input[type="search"],
+    input[type="password"],
+    input[type="email"],
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+}
+
+/* Cross-browser high contrast text rendering for Hero Card (Safari, Chrome, Firefox) */
+.hero-card {
+  isolation: isolate;
+  background-color: #090d16;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.hero-title {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.hero-description {
+  color: #f1f5f9 !important;
+  -webkit-text-fill-color: #f1f5f9 !important;
+  opacity: 1 !important;
+}
+
+/* Print specific styles for QR Labels and Physical Bin Cards */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .no-print,
+  nav,
+  header,
+  footer,
+  .mobile-bottom-nav,
+  button,
+  .print-hide {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-container {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .print-break-inside-avoid {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
