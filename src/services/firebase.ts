@@ -31,19 +31,11 @@ export const firebaseApp = getApps().length > 0
       messagingSenderId: firebaseConfig.messagingSenderId,
     });
 
-// Force fetch directly from server without stale IndexedDB disk cache persistence
-// This guarantees that Chrome, Safari, and other devices always share the exact same Firestore ground truth.
-export const firestore: Firestore = (() => {
-  try {
-    const dbId = firebaseConfig.firestoreDatabaseId || undefined;
-    if (dbId) {
-      return initializeFirestore(firebaseApp, { localCache: memoryLocalCache() }, dbId);
-    }
-    return initializeFirestore(firebaseApp, { localCache: memoryLocalCache() });
-  } catch {
-    return getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId || undefined);
-  }
-})();
+// Initialize Firestore with specific databaseId from config
+export const firestore: Firestore = getFirestore(
+  firebaseApp, 
+  firebaseConfig.firestoreDatabaseId || undefined
+);
 
 export const COLLECTIONS = {
   ITEMS: 'items',
