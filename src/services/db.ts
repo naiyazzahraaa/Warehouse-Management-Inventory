@@ -2,6 +2,8 @@ import { InventoryItem, Transaction, TransactionType, CsvItemRow, StockSummary, 
 import { cloudSync } from './cloudSync';
 import { formatUnit } from '../utils/units';
 import { formatStandardRoleName } from '../utils/roleFormat';
+import { doc, getDoc, getDocs, collection, query, where, limit } from 'firebase/firestore';
+import { firestore, COLLECTIONS } from './firebase';
 
 const DB_NAME = 'WarehouseInventoryDB_v2';
 const DB_VERSION = 1;
@@ -374,10 +376,11 @@ class WarehouseDB {
   }
 
   /**
-   * Automatic Elimination & Data Sanitization Engine:
-   * 1. Eliminates any material number that is NOT exactly 18 digits (e.g. < 18 or > 18 digits or non-numeric).
-   * 2. Eliminates duplicate material numbers (keeping only 1 unique valid item and removing duplicates).
+   * Safe item sanitization and normalization:
+   * 1. Auto-pads numeric material codes to 18 digits if leading zeroes were stripped (e.g. 17 digits from Excel).
+   * 2. Preserves non-numeric codes if present.
    * 3. Normalizes FPA / Non-FPA classification ('FPA' | 'NON_FPA').
+   * 4. Deduplicates only truly duplicate items with identical codes.
    */
   async cleanAndDeduplicateItems(): Promise<{
     totalChecked: number;
@@ -396,21 +399,24 @@ class WarehouseDB {
       const rawCode = (item.material_code || '').trim();
       const codeDigits = rawCode.replace(/\D/g, '');
 
-      // 1. Must be exactly 18 numeric digits
-      if (codeDigits.length !== 18) {
-        itemsToDelete.push(item.id);
-        eliminatedNot18Count++;
-        continue;
+      // Determine standardized code:
+      // If purely numeric and length between 1 and 18, pad with leading zeros to 18 digits
+      let standardizedCode = rawCode;
+      if (codeDigits.length > 0 && codeDigits.length <= 18) {
+        standardizedCode = codeDigits.padStart(18, '0');
+      } else if (codeDigits.length > 18) {
+        standardizedCode = codeDigits;
       }
 
-      // 2. Eliminate duplicate material numbers
-      if (seenCodes.has(codeDigits)) {
+      // Check duplicates
+      const dedupKey = standardizedCode.toUpperCase();
+      if (seenCodes.has(dedupKey)) {
         itemsToDelete.push(item.id);
         eliminatedDuplicateCount++;
         continue;
       }
 
-      seenCodes.add(codeDigits);
+      seenCodes.add(dedupKey);
 
       // Normalize FPA classification
       const rawFpa = (item.fpa_type || 'NON_FPA').toString().toUpperCase().trim();
@@ -422,7 +428,7 @@ class WarehouseDB {
 
       const cleanedItem: InventoryItem = {
         ...item,
-        material_code: codeDigits,
+        material_code: standardizedCode,
         fpa_type: cleanFpa,
         unit: formatUnit(item.unit || 'EA'),
       };
@@ -430,13 +436,12 @@ class WarehouseDB {
       itemsToKeep.push(cleanedItem);
     }
 
-    // Remove deleted items from memory, local IndexedDB, and Cloud
+    // Only remove duplicate records locally if needed, do not aggressively purge Cloud
     for (const id of itemsToDelete) {
       this.memoryItems.delete(id);
       if (this.db) {
         await this.deleteFromStore(STORE_ITEMS, id);
       }
-      cloudSync.syncDeleteItemFromCloud(id).catch(() => {});
     }
 
     // Persist cleaned items
@@ -448,7 +453,7 @@ class WarehouseDB {
     }
 
     if (itemsToDelete.length > 0) {
-      console.log(`[Sanitization] Otomatis mengeliminasi ${eliminatedNot18Count} barang bukan 18 digit dan ${eliminatedDuplicateCount} barang duplikat.`);
+      console.log(`[Sanitization] Menghapus ${eliminatedDuplicateCount} data duplikat.`);
       this.notifyDataChanged();
     }
 
@@ -726,32 +731,125 @@ class WarehouseDB {
 
   async getItemById(id: string): Promise<InventoryItem | null> {
     await this.init();
-    return this.memoryItems.get(id) || null;
+    const local = this.memoryItems.get(id);
+    if (local) return local;
+
+    // Direct Firestore fallback in case local cache hasn't synced yet
+    try {
+      const docRef = doc(firestore, COLLECTIONS.ITEMS, id);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const item = { ...snap.data(), id: snap.id } as InventoryItem;
+        this.memoryItems.set(item.id, item);
+        return item;
+      }
+    } catch (err) {
+      console.warn('[db.getItemById] Firestore lookup error:', err);
+    }
+    return null;
   }
 
   async getItemByMaterialCode(code: string): Promise<InventoryItem | null> {
     await this.init();
+    if (!code) return null;
     const clean = code.trim().toUpperCase();
+    const cleanDigits = clean.replace(/\D/g, '');
+    const padded18 = cleanDigits.length > 0 && cleanDigits.length <= 18 ? cleanDigits.padStart(18, '0') : '';
+    const unpadded = cleanDigits.replace(/^0+/, '');
+
+    // 1. In-memory check: exact, id, padded 18-digit, or unpadded matching
     for (const item of this.memoryItems.values()) {
-      if (item.material_code.toUpperCase() === clean) {
+      const itemCode = (item.material_code || '').trim().toUpperCase();
+      const itemDigits = itemCode.replace(/\D/g, '');
+      const itemUnpadded = itemDigits.replace(/^0+/, '');
+
+      if (itemCode === clean) return item;
+      if (item.id.toUpperCase() === clean) return item;
+      if (padded18 && (itemCode === padded18 || itemDigits === padded18)) return item;
+      if (unpadded && unpadded.length >= 4 && itemUnpadded === unpadded) return item;
+      if (cleanDigits.length >= 6 && itemDigits.endsWith(cleanDigits)) return item;
+    }
+
+    // 2. Direct Firestore queries fallback
+    try {
+      const itemsCol = collection(firestore, COLLECTIONS.ITEMS);
+
+      // Try exact material_code query
+      const qExact = query(itemsCol, where('material_code', '==', clean), limit(1));
+      const snapExact = await getDocs(qExact);
+      if (!snapExact.empty) {
+        const d = snapExact.docs[0];
+        const item = { ...d.data(), id: d.id } as InventoryItem;
+        this.memoryItems.set(item.id, item);
         return item;
       }
+
+      // Try padded 18-digit query
+      if (padded18 && padded18 !== clean) {
+        const qPadded = query(itemsCol, where('material_code', '==', padded18), limit(1));
+        const snapPadded = await getDocs(qPadded);
+        if (!snapPadded.empty) {
+          const d = snapPadded.docs[0];
+          const item = { ...d.data(), id: d.id } as InventoryItem;
+          this.memoryItems.set(item.id, item);
+          return item;
+        }
+      }
+
+      // Try by doc ID
+      const docSnap = await getDoc(doc(firestore, COLLECTIONS.ITEMS, code.trim()));
+      if (docSnap.exists()) {
+        const item = { ...docSnap.data(), id: docSnap.id } as InventoryItem;
+        this.memoryItems.set(item.id, item);
+        return item;
+      }
+
+      // Final fallback: fetch remote items to synchronize and match
+      const snapAll = await getDocs(itemsCol);
+      for (const d of snapAll.docs) {
+        const item = { ...d.data(), id: d.id } as InventoryItem;
+        this.memoryItems.set(item.id, item);
+        const itemCode = (item.material_code || '').trim().toUpperCase();
+        const itemDigits = itemCode.replace(/\D/g, '');
+        const itemUnpadded = itemDigits.replace(/^0+/, '');
+
+        if (
+          itemCode === clean ||
+          item.id.toUpperCase() === clean ||
+          (padded18 && (itemCode === padded18 || itemDigits === padded18)) ||
+          (unpadded && unpadded.length >= 4 && itemUnpadded === unpadded) ||
+          (cleanDigits.length >= 6 && itemDigits.endsWith(cleanDigits))
+        ) {
+          return item;
+        }
+      }
+    } catch (err) {
+      console.warn('[db.getItemByMaterialCode] Firestore query fallback error:', err);
     }
+
     return null;
   }
 
   async addItem(itemData: Omit<InventoryItem, 'id' | 'created_at' | 'updated_at'>): Promise<InventoryItem> {
     await this.init();
 
-    const cleanCode = (itemData.material_code || '').trim().replace(/\D/g, '');
-    if (cleanCode.length !== 18) {
-      throw new Error(`Nomor material '${itemData.material_code}' tidak valid! Harus tepat 18 angka digit (saat ini ${cleanCode.length} digit).`);
+    const rawCode = (itemData.material_code || '').trim();
+    const codeDigits = rawCode.replace(/\D/g, '');
+    let finalCode = rawCode;
+    if (codeDigits.length > 0 && codeDigits.length <= 18) {
+      finalCode = codeDigits.padStart(18, '0');
+    } else if (codeDigits.length > 18) {
+      finalCode = codeDigits;
+    }
+
+    if (!finalCode) {
+      throw new Error(`Nomor material tidak boleh kosong!`);
     }
 
     // Check duplicate code
-    const existing = await this.getItemByMaterialCode(cleanCode);
+    const existing = await this.getItemByMaterialCode(finalCode);
     if (existing) {
-      throw new Error(`Nomor material '${cleanCode}' sudah terdaftar dalam sistem (Duplikat tereliminasi)!`);
+      throw new Error(`Nomor material '${finalCode}' sudah terdaftar dalam sistem!`);
     }
 
     const now = new Date().toISOString();
@@ -760,7 +858,7 @@ class WarehouseDB {
 
     const newItem: InventoryItem = {
       ...itemData,
-      material_code: cleanCode,
+      material_code: finalCode,
       fpa_type: cleanFpa,
       unit: formatUnit(itemData.unit),
       id: `item-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -799,9 +897,13 @@ class WarehouseDB {
     if (!item) throw new Error('Barang tidak ditemukan');
 
     if (updates.material_code) {
-      const cleanCode = updates.material_code.trim().replace(/\D/g, '');
-      if (cleanCode.length !== 18) {
-        throw new Error(`Nomor material '${updates.material_code}' tidak valid! Harus tepat 18 angka digit (saat ini ${cleanCode.length} digit).`);
+      const rawCode = updates.material_code.trim();
+      const codeDigits = rawCode.replace(/\D/g, '');
+      let cleanCode = rawCode;
+      if (codeDigits.length > 0 && codeDigits.length <= 18) {
+        cleanCode = codeDigits.padStart(18, '0');
+      } else if (codeDigits.length > 18) {
+        cleanCode = codeDigits;
       }
       if (cleanCode.toUpperCase() !== item.material_code.toUpperCase()) {
         const existing = await this.getItemByMaterialCode(cleanCode);
@@ -1297,9 +1399,11 @@ class WarehouseDB {
 
     const existingCodes = new Set<string>();
     for (const item of this.memoryItems.values()) {
-      const c = (item.material_code || '').trim().replace(/\D/g, '');
-      if (c.length === 18) {
-        existingCodes.add(c);
+      const c = (item.material_code || '').trim().toUpperCase();
+      existingCodes.add(c);
+      const digits = c.replace(/\D/g, '');
+      if (digits.length > 0 && digits.length <= 18) {
+        existingCodes.add(digits.padStart(18, '0'));
       }
     }
 
@@ -1320,24 +1424,27 @@ class WarehouseDB {
         continue;
       }
 
-      // Automatically eliminate if not exactly 18 digits (less or more than 18)
-      if (codeDigits.length !== 18) {
-        invalidLengthCodes.push(`${rawCode} (${codeDigits.length} digit - eliminasi otomatis)`);
-        continue;
+      // Auto-pad to 18 digits if numeric and <= 18 digits (handles Excel leading zero stripping)
+      let finalCode = rawCode;
+      if (codeDigits.length > 0 && codeDigits.length <= 18) {
+        finalCode = codeDigits.padStart(18, '0');
+      } else if (codeDigits.length > 18) {
+        finalCode = codeDigits;
       }
 
       if (!row.name || !row.name.trim()) {
-        errors.push(`Baris ${i + 1} (${codeDigits}): Nama barang tidak boleh kosong.`);
+        errors.push(`Baris ${i + 1} (${finalCode}): Nama barang tidak boleh kosong.`);
         continue;
       }
 
-      // Automatically eliminate duplicate material numbers
-      if (existingCodes.has(codeDigits) || seenInBatch.has(codeDigits)) {
-        duplicateCodes.push(`${codeDigits} (duplikat tereliminasi)`);
+      // Check duplicate material numbers
+      if (existingCodes.has(finalCode.toUpperCase()) || seenInBatch.has(finalCode.toUpperCase())) {
+        duplicateCodes.push(`${finalCode} (duplikat)`);
         continue;
       }
 
-      seenInBatch.add(codeDigits);
+      seenInBatch.add(finalCode.toUpperCase());
+      existingCodes.add(finalCode.toUpperCase());
       const stock = Math.max(0, parseInt(String(row.initial_stock || 0), 10) || 0);
       const minStock = Math.max(0, parseInt(String(row.min_stock || 10), 10) || 10);
 
@@ -1355,7 +1462,7 @@ class WarehouseDB {
 
       const newItem: InventoryItem = {
         id: `item-csv-${Date.now()}-${i}-${Math.floor(Math.random() * 1000)}`,
-        material_code: codeDigits,
+        material_code: finalCode,
         name: row.name.trim(),
         category: (row.category || 'Umum').trim(),
         fpa_type: fpaType,

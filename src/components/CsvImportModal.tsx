@@ -133,20 +133,68 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
     document.body.removeChild(link);
   };
 
+  const getRowVal = (row: any, ...aliases: string[]): string => {
+    for (const alias of aliases) {
+      if (row[alias] !== undefined && row[alias] !== null && String(row[alias]).trim() !== '') {
+        return String(row[alias]).trim();
+      }
+    }
+    const rowKeys = Object.keys(row || {});
+    for (const alias of aliases) {
+      const cleanAlias = alias.toLowerCase().replace(/[\s_\-\.]/g, '');
+      for (const key of rowKeys) {
+        const cleanKey = key.toLowerCase().replace(/[\s_\-\.]/g, '');
+        if (cleanKey === cleanAlias && row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== '') {
+          return String(row[key]).trim();
+        }
+      }
+    }
+    return '';
+  };
+
   const processRawRecords = async (rawData: any[]) => {
     const errors: string[] = [];
     const rows: CsvItemRow[] = [];
     const seenInFile = new Set<string>();
     const duplicates: string[] = [];
-    const not18Digits: string[] = [];
+    const autoPaddedNotes: string[] = [];
 
     for (let i = 0; i < rawData.length; i++) {
       const row = rawData[i];
-      const rawCode = String(row.material_code || row.kode_material || row.code || row.kode || row.part_number || '').trim();
-      const code = rawCode.replace(/\D/g, '');
-      const name = String(row.name || row.nama_barang || row.nama || row.item_name || '').trim();
-      const category = String(row.category || row.kategori || row.kelompok || 'Umum').trim();
-      const rawFpa = String(row.fpa_type || row.fpa || row.klasifikasi || row.kategori_fpa || row.tipe || row.kontrak || '').toUpperCase().trim();
+      const rawCode = getRowVal(
+        row,
+        'material_code',
+        'kode_material',
+        'nomor_material',
+        'no_material',
+        'no._material',
+        'material_no',
+        'material_number',
+        'kode_barang',
+        'code',
+        'kode',
+        'part_number',
+        'part_no',
+        'material',
+        'sap_code',
+        'sap_no'
+      );
+      const codeDigits = rawCode.replace(/\D/g, '');
+
+      // Auto-pad to 18 digits if purely numeric and <= 18 digits (handles Excel leading 0 truncation)
+      let finalCode = rawCode;
+      if (codeDigits.length > 0 && codeDigits.length <= 18) {
+        finalCode = codeDigits.padStart(18, '0');
+        if (codeDigits.length < 18) {
+          autoPaddedNotes.push(`Baris ${i + 2}: '${rawCode}' (${codeDigits.length} digit) -> '${finalCode}' (18 digit)`);
+        }
+      } else if (codeDigits.length > 18) {
+        finalCode = codeDigits;
+      }
+
+      const name = getRowVal(row, 'name', 'nama_barang', 'nama', 'item_name', 'deskripsi_singkat', 'barang');
+      const category = getRowVal(row, 'category', 'kategori', 'kelompok', 'group') || 'Umum';
+      const rawFpa = getRowVal(row, 'fpa_type', 'fpa', 'klasifikasi', 'kategori_fpa', 'tipe', 'kontrak').toUpperCase();
       const fpaType: 'FPA' | 'NON_FPA' = (
         rawFpa === 'FPA' ||
         rawFpa === 'KONTRAK' ||
@@ -157,45 +205,40 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
         rawFpa === '1'
       ) ? 'FPA' : 'NON_FPA';
 
-      const description = String(row.description || row.deskripsi || row.keterangan || '').trim();
-      const initial_stock = parseInt(String(row.initial_stock || row.stok_awal || row.stock || row.stok || row.qty || '0'), 10) || 0;
-      const location = String(row.location || row.lokasi || row.bin_location || row.rak || 'TN 1.01.01.01A').trim();
-      const rawUnit = String(row.unit || row.satuan || 'EA').trim();
+      const description = getRowVal(row, 'description', 'deskripsi', 'keterangan', 'spek', 'spesifikasi');
+      const initial_stock = parseInt(getRowVal(row, 'initial_stock', 'stok_awal', 'stock', 'stok', 'qty', 'saldo', 'saldo_awal') || '0', 10) || 0;
+      const location = getRowVal(row, 'location', 'lokasi', 'bin_location', 'bin', 'rak') || 'TN 1.01.01.01A';
+      const rawUnit = getRowVal(row, 'unit', 'satuan', 'uom') || 'EA';
       const unit = formatUnit(rawUnit);
-      const min_stock = parseInt(String(row.min_stock || row.stok_minimum || row.safety_stock || '10'), 10) || 10;
+      const min_stock = parseInt(getRowVal(row, 'min_stock', 'stok_minimum', 'min_stok', 'safety_stock') || '10', 10) || 10;
 
       if (!rawCode) {
-        errors.push(`Baris ${i + 2}: Kolom material_code (nomor material) kosong.`);
-        continue;
-      }
-
-      // Automatically eliminate if not exactly 18 digits (less or more than 18)
-      if (code.length !== 18) {
-        not18Digits.push(`${rawCode} (baris ${i + 2}: ${code.length} digit - dieliminasi otomatis)`);
+        errors.push(`Baris ${i + 2}: Kolom nomor material (material_code) kosong.`);
         continue;
       }
 
       if (!name) {
-        errors.push(`Baris ${i + 2} (${code}): Kolom name (nama barang) kosong.`);
+        errors.push(`Baris ${i + 2} (${finalCode}): Kolom nama barang (name) kosong.`);
         continue;
       }
 
-      // Automatically eliminate duplicates in file
-      if (seenInFile.has(code)) {
-        duplicates.push(`${code} (duplikat di dalam file baris ${i + 2} - dieliminasi otomatis)`);
+      // Check duplicate within file
+      const dedupKey = finalCode.toUpperCase();
+      if (seenInFile.has(dedupKey)) {
+        duplicates.push(`${finalCode} (duplikat di dalam file baris ${i + 2})`);
         continue;
       }
-      seenInFile.add(code);
+      seenInFile.add(dedupKey);
 
-      // Check if already in database (automatically eliminate duplicate)
-      const existingInDb = await db.getItemByMaterialCode(code);
+      // Check if already in database
+      const existingInDb = await db.getItemByMaterialCode(finalCode);
       if (existingInDb) {
-        duplicates.push(`${code} (sudah ada di database: "${existingInDb.name}" - dieliminasi otomatis)`);
+        duplicates.push(`${finalCode} (sudah ada di database: "${existingInDb.name}")`);
         continue;
       }
 
       rows.push({
-        material_code: code,
+        material_code: finalCode,
         name,
         category,
         fpa_type: fpaType,
@@ -209,7 +252,7 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
 
     setParsedRows(rows);
     setDuplicateWarnings(duplicates);
-    setInvalidLengthWarnings(not18Digits);
+    setInvalidLengthWarnings(autoPaddedNotes);
     setParseErrors(errors);
     setIsLoading(false);
   };
@@ -410,21 +453,21 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
                 </button>
               </div>
 
-              {/* Invalid Length Alert (Mandated: Eliminasi nomor material kurang atau lebih dari 18 digit) */}
+              {/* Auto-Padding Notice for leading zeros */}
               {invalidLengthWarnings.length > 0 && (
-                <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 space-y-2">
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 space-y-2">
                   <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="font-bold text-rose-950">
-                        Eliminasi Otomatis: Material Number Bukan 18 Digit ({invalidLengthWarnings.length} item dieliminasi):
+                      <h4 className="font-bold text-emerald-950">
+                        Otomatis Dilengkapi Menjadi 18 Digit ({invalidLengthWarnings.length} item disesuaikan):
                       </h4>
-                      <p className="text-rose-800 mt-0.5">
-                        Baris dengan panjang nomor material bukan 18 angka digit telah <strong>dieliminasi secara otomatis</strong>:
+                      <p className="text-emerald-800 mt-0.5">
+                        Baris dengan angka 0 di depan yang terpotong oleh format Excel telah <strong>secara otomatis distandarisasi menjadi 18 digit SAP</strong>:
                       </p>
                     </div>
                   </div>
-                  <div className="max-h-28 overflow-y-auto bg-white/70 p-2 rounded-lg border border-rose-200/60 font-mono text-[11px] text-rose-950 divide-y divide-rose-100">
+                  <div className="max-h-28 overflow-y-auto bg-white/70 p-2 rounded-lg border border-emerald-200/60 font-mono text-[11px] text-emerald-950 divide-y divide-emerald-100">
                     {invalidLengthWarnings.map((inv, idx) => (
                       <div key={idx} className="py-0.5">{inv}</div>
                     ))}

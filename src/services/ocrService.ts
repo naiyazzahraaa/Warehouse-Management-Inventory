@@ -91,8 +91,19 @@ class OCRService {
     const raw = rawText.trim();
 
     // 1. Direct raw token
+    // 0. Check if raw text is a bin-card URL or route (e.g. https://.../bin-card/item-123 or /bin-card/051111...)
+    const binCardMatch = raw.match(/\/bin-card\/([A-Za-z0-9_\-\.]+)/i);
+    if (binCardMatch && binCardMatch[1]) {
+      candidates.add(binCardMatch[1].trim());
+    }
+
+    // 1. Direct raw token
     const directClean = raw.replace(/[\r\n\t]+/g, ' ').trim();
     candidates.add(directClean);
+
+    // If text contains an item ID format (e.g. item-csv-..., item-17...)
+    const itemIdMatches = raw.match(/\bitem-[a-z0-9_\-]+\b/gi) || [];
+    itemIdMatches.forEach((m) => candidates.add(m.trim()));
 
     // 2. Strip common prefixes (e.g. "MAT:", "SAP:", "QR-", "NO:", "PO:", "KODE:", "PART:", "ITEM:", "S/N:")
     const strippedPrefix = directClean.replace(/^(mat|sap|qr|no|po|kode|part|item|s\/n|sn)[\s.:#-]+/i, '').trim();
@@ -102,22 +113,45 @@ class OCRService {
     const digitsOnly = directClean.replace(/\D/g, '');
     if (digitsOnly.length >= 3) {
       candidates.add(digitsOnly);
+      // Auto-pad to 18 digits (handles Excel leading zero stripping)
+      if (digitsOnly.length <= 18) {
+        candidates.add(digitsOnly.padStart(18, '0'));
+      }
+      // Also unpadded without leading zeroes
+      const unpadded = digitsOnly.replace(/^0+/, '');
+      if (unpadded.length >= 3) {
+        candidates.add(unpadded);
+      }
     }
 
     // 4. Find all continuous sequences of digits or alphanumeric (length >= 3)
     const regexDigitRuns = raw.match(/\b\d{3,24}\b/g) || [];
-    regexDigitRuns.forEach((r) => candidates.add(r));
+    regexDigitRuns.forEach((r) => {
+      candidates.add(r);
+      if (r.length <= 18) {
+        candidates.add(r.padStart(18, '0'));
+      }
+      const unpadded = r.replace(/^0+/, '');
+      if (unpadded.length >= 3) {
+        candidates.add(unpadded);
+      }
+    });
 
     // Numbers separated by dots, dashes, slashes or spaces like 031-007-000 or 100.200.45
     const regexFormattedNumbers = raw.match(/(\d+[\s.\-_/]+\d+[\s.\-_/\d]*)/g) || [];
     regexFormattedNumbers.forEach((fn) => {
       const cleanFn = fn.replace(/[\s.\-_/]/g, '');
-      if (cleanFn.length >= 3) candidates.add(cleanFn);
+      if (cleanFn.length >= 3) {
+        candidates.add(cleanFn);
+        if (cleanFn.length <= 18) {
+          candidates.add(cleanFn.padStart(18, '0'));
+        }
+      }
       candidates.add(fn.trim());
     });
 
     // Alphanumeric tokens (e.g., MAT-91301, ABC-1029)
-    const regexAlphaTokens = raw.match(/[A-Za-z0-9_\-\/]{3,24}/g) || [];
+    const regexAlphaTokens = raw.match(/[A-Za-z0-9_\-\/]{3,30}/g) || [];
     regexAlphaTokens.forEach((tok) => {
       const t = tok.trim();
       candidates.add(t);
@@ -135,6 +169,9 @@ class OCRService {
       .replace(/\D/g, '');
     if (normalizedDigits.length >= 3) {
       candidates.add(normalizedDigits);
+      if (normalizedDigits.length <= 18) {
+        candidates.add(normalizedDigits.padStart(18, '0'));
+      }
     }
 
     return Array.from(candidates).filter((c) => c && c.length >= 2);
@@ -164,16 +201,23 @@ class OCRService {
   ): Promise<{ matchedItem: InventoryItem | null; detectedCode: string | null }> {
     const candidates = this.extractPotentialCodes(rawText);
 
-    // 1. Direct exact match on material_code
+    // 1. Direct match by item ID or material_code
     for (const code of candidates) {
-      const item = await db.getItemByMaterialCode(code.toUpperCase());
-      if (item) {
-        return { matchedItem: item, detectedCode: item.material_code };
+      // Check ID first
+      const itemById = await db.getItemById(code);
+      if (itemById) {
+        return { matchedItem: itemById, detectedCode: itemById.material_code };
+      }
+
+      // Check Material Code
+      const itemByCode = await db.getItemByMaterialCode(code);
+      if (itemByCode) {
+        return { matchedItem: itemByCode, detectedCode: itemByCode.material_code };
       }
     }
 
     // 2. Exact match on raw digits stripping (comparing digits in database vs scanned digits)
-    const allItemsRes = await db.getItems({ pageSize: 500 });
+    const allItemsRes = await db.getItems({ pageSize: 1000 });
     const allItems = allItemsRes.items;
 
     for (const cand of candidates) {
@@ -181,8 +225,11 @@ class OCRService {
       if (candDigits.length >= 4) {
         const found = allItems.find((it) => {
           const itemDigits = it.material_code.replace(/\D/g, '');
+          const unpaddedItem = itemDigits.replace(/^0+/, '');
+          const unpaddedCand = candDigits.replace(/^0+/, '');
           return (
             itemDigits === candDigits ||
+            (unpaddedItem.length >= 4 && unpaddedItem === unpaddedCand) ||
             (candDigits.length >= 5 && itemDigits.endsWith(candDigits)) ||
             (itemDigits.length >= 5 && candDigits.endsWith(itemDigits))
           );
@@ -198,9 +245,11 @@ class OCRService {
       const upper = cand.toUpperCase();
       const found = allItems.find(
         (it) =>
+          it.id.toUpperCase() === upper ||
           it.material_code.toUpperCase() === upper ||
           it.material_code.toUpperCase().includes(upper) ||
-          upper.includes(it.material_code.toUpperCase())
+          upper.includes(it.material_code.toUpperCase()) ||
+          (upper.length >= 5 && it.name.toUpperCase().includes(upper))
       );
       if (found) {
         return { matchedItem: found, detectedCode: found.material_code };
