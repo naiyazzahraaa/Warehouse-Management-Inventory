@@ -31,11 +31,18 @@ export const firebaseApp = getApps().length > 0
       messagingSenderId: firebaseConfig.messagingSenderId,
     });
 
-// Initialize Firestore with specific databaseId from config
-export const firestore: Firestore = getFirestore(
-  firebaseApp, 
-  firebaseConfig.firestoreDatabaseId || undefined
-);
+// Initialize Firestore explicitly with memoryLocalCache so mobile/Safari does not retain stale IndexedDB cache
+export const firestore: Firestore = (() => {
+  const dbId = firebaseConfig.firestoreDatabaseId || undefined;
+  try {
+    if (dbId) {
+      return initializeFirestore(firebaseApp, { localCache: memoryLocalCache() }, dbId);
+    }
+    return initializeFirestore(firebaseApp, { localCache: memoryLocalCache() });
+  } catch {
+    return getFirestore(firebaseApp, dbId);
+  }
+})();
 
 export const COLLECTIONS = {
   ITEMS: 'items',

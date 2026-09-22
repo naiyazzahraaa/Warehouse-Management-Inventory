@@ -136,6 +136,7 @@ class CloudSyncService {
       const itemsCol = collection(firestore, COLLECTIONS.ITEMS);
       this.itemsUnsubscribe = onSnapshot(
         itemsCol,
+        { includeMetadataChanges: false },
         async (snapshot) => {
           try {
             if (snapshot.empty && !this.isInitialSyncDone) {
@@ -195,6 +196,7 @@ class CloudSyncService {
       
       this.transactionsUnsubscribe = onSnapshot(
         txQuery,
+        { includeMetadataChanges: false },
         async (snapshot) => {
           try {
             const remoteTxs: Transaction[] = [];
@@ -257,7 +259,7 @@ class CloudSyncService {
    */
   listenToItems(onUpdate: (items: InventoryItem[]) => void): Unsubscribe {
     const itemsCol = collection(firestore, COLLECTIONS.ITEMS);
-    return onSnapshot(itemsCol, (snapshot) => {
+    return onSnapshot(itemsCol, { includeMetadataChanges: false }, (snapshot) => {
       const items: InventoryItem[] = [];
       snapshot.forEach((d) => {
         const item = d.data() as InventoryItem;
@@ -273,7 +275,7 @@ class CloudSyncService {
   listenToTransactions(onUpdate: (txs: Transaction[]) => void): Unsubscribe {
     const txCol = collection(firestore, COLLECTIONS.TRANSACTIONS);
     const txQuery = query(txCol, limit(500));
-    return onSnapshot(txQuery, (snapshot) => {
+    return onSnapshot(txQuery, { includeMetadataChanges: false }, (snapshot) => {
       const txs: Transaction[] = [];
       snapshot.forEach((d) => {
         const tx = d.data() as Transaction;
