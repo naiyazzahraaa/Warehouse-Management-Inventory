@@ -86,7 +86,7 @@ export const MultiDeviceSyncGuideModal: React.FC<MultiDeviceSyncGuideModalProps>
               </div>
               <span className="text-[11px] font-mono text-emerald-700 font-semibold bg-white px-2 py-0.5 rounded border border-emerald-200">
                 {syncInfo.lastSyncedAt 
-                  ? `Sinkron: ${syncInfo.lastSyncedAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}`
+                  ? `Sinkron: ${new Date(syncInfo.lastSyncedAt).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}`
                   : 'Siap Sinkron'}
               </span>
             </div>

@@ -277,7 +277,7 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
             <h2 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
               Daftar Barang & Inventaris Fisik
               <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
-                {totalItems.toLocaleString('id-ID')} Total Barang
+                {(totalItems ?? 0).toLocaleString('id-ID')} Total Barang
               </span>
             </h2>
             <p className="text-xs text-slate-600 font-normal">
@@ -662,7 +662,7 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
                 {totalItems === 0 ? 0 : (page - 1) * pageSize + 1}-
                 {Math.min(page * pageSize, totalItems)}
               </strong>{' '}
-              dari <strong>{totalItems.toLocaleString('id-ID')}</strong> barang
+              dari <strong>{(totalItems ?? 0).toLocaleString('id-ID')}</strong> barang
             </span>
 
             <div className="flex items-center gap-1">

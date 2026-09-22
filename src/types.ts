@@ -65,6 +65,12 @@ export interface StockSummary {
   totalInToday: number;
   totalOutToday: number;
   totalTransactionsCount: number;
+  total_items?: number;
+  total_stock?: number;
+  low_stock_items?: number;
+  out_of_stock_items?: number;
+  fpa_items_count?: number;
+  non_fpa_items_count?: number;
 }
 
 export interface CsvItemRow {

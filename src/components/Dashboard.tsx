@@ -119,14 +119,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
         });
 
         if (isMounted) {
-          setSummary({
+          setSummary((prev) => ({
+            totalItems,
+            totalStock,
+            lowStockCount: lowStock,
+            outOfStockCount: outOfStock,
+            totalInToday: prev?.totalInToday ?? 0,
+            totalOutToday: prev?.totalOutToday ?? 0,
+            totalTransactionsCount: prev?.totalTransactionsCount ?? 0,
             total_items: totalItems,
             total_stock: totalStock,
-            out_of_stock_items: outOfStock,
             low_stock_items: lowStock,
+            out_of_stock_items: outOfStock,
             fpa_items_count: fpaCount,
             non_fpa_items_count: nonFpaCount,
-          });
+          }));
           setCriticalItems(lowItems.slice(0, 25));
         }
       },
@@ -148,6 +155,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       (snapshot) => {
         const txs: Transaction[] = [];
         let myCount = 0;
+        let todayIn = 0;
+        let todayOut = 0;
+        const todayStr = new Date().toISOString().slice(0, 10);
         const cleanUser = user?.username?.toLowerCase() || '';
         const cleanName = user?.name?.toLowerCase() || '';
 
@@ -162,12 +172,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
             ) {
               myCount++;
             }
+            if (t.transaction_date && t.transaction_date.startsWith(todayStr)) {
+              if (t.transaction_type === 'IN') {
+                todayIn += Number(t.quantity) || 0;
+              } else if (t.transaction_type === 'OUT') {
+                todayOut += Number(t.quantity) || 0;
+              }
+            }
           }
         });
 
         if (isMounted) {
           setRecentTransactions(txs.slice(0, 8));
           setUserTxCount(myCount);
+          setSummary((prev) => ({
+            totalItems: prev?.totalItems ?? 0,
+            totalStock: prev?.totalStock ?? 0,
+            lowStockCount: prev?.lowStockCount ?? 0,
+            outOfStockCount: prev?.outOfStockCount ?? 0,
+            totalInToday: todayIn,
+            totalOutToday: todayOut,
+            totalTransactionsCount: txs.length,
+            total_items: prev?.total_items ?? 0,
+            total_stock: prev?.total_stock ?? 0,
+            low_stock_items: prev?.low_stock_items ?? 0,
+            out_of_stock_items: prev?.out_of_stock_items ?? 0,
+            fpa_items_count: prev?.fpa_items_count ?? 0,
+            non_fpa_items_count: prev?.non_fpa_items_count ?? 0,
+          }));
         }
       },
       (err) => {
@@ -526,7 +558,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-extrabold text-slate-950 tracking-tight">
-              {summary ? summary.totalItems.toLocaleString('id-ID') : '...'}
+              {summary ? (summary.totalItems ?? summary.total_items ?? 0).toLocaleString('id-ID') : '0'}
             </span>
             <span className="text-xs text-slate-700 font-bold">SKU</span>
           </div>
@@ -542,7 +574,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-2xl sm:text-3xl font-extrabold text-amber-700 tracking-tight">
-              {summary ? (summary.lowStockCount + summary.outOfStockCount).toLocaleString('id-ID') : '...'}
+              {summary
+                ? (
+                    (summary.lowStockCount ?? summary.low_stock_items ?? 0) +
+                    (summary.outOfStockCount ?? summary.out_of_stock_items ?? 0)
+                  ).toLocaleString('id-ID')
+                : '0'}
             </span>
             <span className="text-xs text-slate-700 font-bold">item</span>
           </div>
@@ -953,15 +990,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <tbody className="divide-y divide-slate-200">
                 {recentTransactions.map((tx) => {
                   const isIn = tx.transaction_type === 'IN';
-                  const timeStr = new Date(tx.transaction_date).toLocaleTimeString('id-ID', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    hour12: false,
-                  });
-                  const dateStr = new Date(tx.transaction_date).toLocaleDateString('id-ID', {
-                    day: '2-digit',
-                    month: 'short',
-                  });
+                  let timeStr = '-';
+                  let dateStr = '-';
+                  if (tx.transaction_date) {
+                    const parsed = new Date(tx.transaction_date);
+                    if (!isNaN(parsed.getTime())) {
+                      timeStr = parsed.toLocaleTimeString('id-ID', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false,
+                      });
+                      dateStr = parsed.toLocaleDateString('id-ID', {
+                        day: '2-digit',
+                        month: 'short',
+                      });
+                    }
+                  }
 
                   return (
                     <tr key={tx.id} className="hover:bg-slate-50 transition-colors">
