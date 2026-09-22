@@ -17,7 +17,7 @@ import {
   serverTimestamp,
   Firestore
 } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase App instance
 export const firebaseApp = getApps().length > 0 
