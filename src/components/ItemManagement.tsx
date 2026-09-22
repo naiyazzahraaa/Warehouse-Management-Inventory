@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { firestore, COLLECTIONS } from '../services/firebase';
 import { 
   Search, 
   Filter, 
@@ -52,7 +54,6 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
 }) => {
   const { isAdmin, isSupervisor } = useAuth();
   const [stoItem, setStoItem] = useState<InventoryItem | null>(null);
-  const [localRefresh, setLocalRefresh] = useState<number>(0);
   
   // Query States
   const [search, setSearch] = useState('');
@@ -62,95 +63,140 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
   const [sortBy, setSortBy] = useState<'code' | 'name' | 'stock' | 'updated'>('code');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   
-  // Pagination States (Optimized for 6000+ items)
+  // Pagination States
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [jumpPage, setJumpPage] = useState('');
-  const [totalItems, setTotalItems] = useState(0);
 
-  // Data & Selection States
-  const [items, setItems] = useState<InventoryItem[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  // Data & Selection States (powered by real-time Firestore onSnapshot)
+  const [allItems, setAllItems] = useState<InventoryItem[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Load Categories on mount
+  // Real-time Firestore onSnapshot listener with cleanup
   useEffect(() => {
-    db.getCategories().then(setCategories);
+    setIsLoading(true);
+    let isMounted = true;
+
+    const unsubscribeFirestore = onSnapshot(
+      collection(firestore, COLLECTIONS.ITEMS),
+      (snapshot) => {
+        const fetched: InventoryItem[] = [];
+        snapshot.forEach((docSnap) => {
+          const it = docSnap.data() as InventoryItem;
+          if (it) {
+            fetched.push({
+              ...it,
+              id: docSnap.id || it.id,
+              unit: formatUnit(it.unit),
+            });
+          }
+        });
+        if (isMounted) {
+          setAllItems(fetched);
+          setIsLoading(false);
+        }
+      },
+      (error) => {
+        console.warn('[ItemManagement] Firestore onSnapshot fallback to local:', error);
+        db.getItems({ page: 1, pageSize: 10000 }).then((res) => {
+          if (isMounted) {
+            setAllItems(res.items);
+            setIsLoading(false);
+          }
+        });
+      }
+    );
+
+    const unsubscribeDb = db.subscribe(async () => {
+      const res = await db.getItems({ page: 1, pageSize: 10000 });
+      if (isMounted) {
+        setAllItems(res.items);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribeFirestore();
+      unsubscribeDb();
+    };
   }, [refreshTrigger]);
 
-  const fetchCurrentItems = useCallback(async () => {
-    try {
-      const result = await db.getItems({
-        search: search.trim(),
-        category: selectedCategory,
-        fpaType: fpaFilter !== 'all' ? fpaFilter : undefined,
-        stockFilter,
-        sortBy,
-        sortOrder,
-        page,
-        pageSize,
-      });
-      setItems(result.items);
-      setTotalItems(result.total);
-      const cats = await db.getCategories();
-      setCategories(cats);
-    } catch (err) {
-      console.error('Failed to reload items:', err);
+  // Derive categories from live items
+  const categories = useMemo(() => {
+    return Array.from(new Set(allItems.map((i) => i.category).filter(Boolean))).sort();
+  }, [allItems]);
+
+  // Derive filtered and sorted items in memory for instantaneous zero-latency filtering
+  const filteredItems = useMemo(() => {
+    let list = allItems;
+
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(
+        (i) =>
+          (i.material_code && i.material_code.toLowerCase().includes(q)) ||
+          (i.name && i.name.toLowerCase().includes(q)) ||
+          (i.category && i.category.toLowerCase().includes(q)) ||
+          (i.location && i.location.toLowerCase().includes(q)) ||
+          (i.fpa_type && i.fpa_type.toLowerCase().includes(q)) ||
+          (i.low_stock_notes && i.low_stock_notes.toLowerCase().includes(q))
+      );
     }
-  }, [search, selectedCategory, fpaFilter, stockFilter, sortBy, sortOrder, page, pageSize]);
 
-  // Real-time listener: Subscribe to Firestore and local database mutations
-  useEffect(() => {
-    const unsubscribe = db.subscribe(() => {
-      fetchCurrentItems();
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, [fetchCurrentItems]);
+    if (selectedCategory !== 'all') {
+      list = list.filter((i) => i.category === selectedCategory);
+    }
 
-  // Load Items with Debounced Search & Pagination
-  useEffect(() => {
-    let isCancelled = false;
-    const loadItems = async () => {
-      setIsLoading(true);
-      try {
-        const result = await db.getItems({
-          search: search.trim(),
-          category: selectedCategory,
-          fpaType: fpaFilter !== 'all' ? fpaFilter : undefined,
-          stockFilter,
-          sortBy,
-          sortOrder,
-          page,
-          pageSize,
-        });
-
-        if (!isCancelled) {
-          setItems(result.items);
-          setTotalItems(result.total);
+    if (fpaFilter !== 'all') {
+      list = list.filter((i) => {
+        const itemFpa = (i.fpa_type || 'NON_FPA').toString().toUpperCase().trim();
+        if (fpaFilter === 'FPA') {
+          return itemFpa === 'FPA' || itemFpa === 'KONTRAK' || itemFpa.includes('KONTRAK');
+        } else {
+          return itemFpa === 'NON_FPA' || itemFpa === 'NON-FPA' || itemFpa === 'NON FPA' || itemFpa === 'REGULER' || !i.fpa_type;
         }
-      } catch (err) {
-        console.error('Failed to load items:', err);
-      } finally {
-        if (!isCancelled) setIsLoading(false);
-      }
-    };
+      });
+    }
 
-    const debounceTimer = setTimeout(loadItems, 150);
-    return () => {
-      isCancelled = true;
-      clearTimeout(debounceTimer);
-    };
-  }, [search, selectedCategory, fpaFilter, stockFilter, sortBy, sortOrder, page, pageSize, refreshTrigger, localRefresh]);
+    if (stockFilter !== 'all') {
+      if (stockFilter === 'out') {
+        list = list.filter((i) => (i.current_stock ?? 0) <= 0);
+      } else if (stockFilter === 'low') {
+        list = list.filter((i) => (i.current_stock ?? 0) <= (i.min_stock ?? 0));
+      } else if (stockFilter === 'normal') {
+        list = list.filter((i) => (i.current_stock ?? 0) > (i.min_stock ?? 0));
+      }
+    }
+
+    return [...list].sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'code') {
+        cmp = (a.material_code || '').localeCompare(b.material_code || '', undefined, { numeric: true });
+      } else if (sortBy === 'name') {
+        cmp = (a.name || '').localeCompare(b.name || '');
+      } else if (sortBy === 'stock') {
+        cmp = (a.current_stock ?? 0) - (b.current_stock ?? 0);
+      } else if (sortBy === 'updated') {
+        cmp = new Date(a.updated_at || 0).getTime() - new Date(b.updated_at || 0).getTime();
+      }
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
+  }, [allItems, search, selectedCategory, fpaFilter, stockFilter, sortBy, sortOrder]);
+
+  const totalItems = filteredItems.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+
+  // Current page items
+  const items = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredItems.slice(start, start + pageSize);
+  }, [filteredItems, page, pageSize]);
 
   // Reset page to 1 when filters change
   useEffect(() => {
     setPage(1);
   }, [search, selectedCategory, fpaFilter, stockFilter, pageSize]);
-
-  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
 
   // Selection handlers for Batch Print
   const handleToggleSelectAllOnPage = () => {
@@ -180,11 +226,7 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
 
   const handleTriggerBatchPrint = async () => {
     if (selectedIds.size === 0) return;
-    const selectedList: InventoryItem[] = [];
-    for (const id of selectedIds) {
-      const it = await db.getItemById(id);
-      if (it) selectedList.push(it);
-    }
+    const selectedList = allItems.filter((it) => selectedIds.has(it.id));
     onOpenBatchPrint(selectedList);
   };
 
@@ -197,18 +239,6 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
 
     try {
       await db.deleteItem(item.id);
-      // Reload current view
-      const result = await db.getItems({
-        search: search.trim(),
-        category: selectedCategory,
-        stockFilter,
-        sortBy,
-        sortOrder,
-        page,
-        pageSize,
-      });
-      setItems(result.items);
-      setTotalItems(result.total);
       // Remove from selection if was selected
       if (selectedIds.has(item.id)) {
         const next = new Set(selectedIds);
@@ -223,16 +253,7 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
   const handleExportItems = async () => {
     try {
       setIsLoading(true);
-      const allData = await db.getItems({
-        search: search.trim(),
-        category: selectedCategory,
-        stockFilter,
-        sortBy,
-        sortOrder,
-        page: 1,
-        pageSize: 100000,
-      });
-      const res = exportInventoryItemsToExcel(allData.items);
+      const res = exportInventoryItemsToExcel(filteredItems);
       alert(`Berhasil mengekspor ${res.count} data barang ke file ${res.filename}`);
     } catch (err: any) {
       console.error('Export error:', err);
@@ -725,7 +746,6 @@ export const ItemManagement: React.FC<ItemManagementProps> = ({
           onClose={() => setStoItem(null)}
           onSuccess={() => {
             setStoItem(null);
-            setLocalRefresh((r) => r + 1);
           }}
         />
       )}

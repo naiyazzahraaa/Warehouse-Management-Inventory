@@ -136,20 +136,8 @@ class CloudSyncService {
       const itemsCol = collection(firestore, COLLECTIONS.ITEMS);
       this.itemsUnsubscribe = onSnapshot(
         itemsCol,
-        { includeMetadataChanges: false },
         async (snapshot) => {
           try {
-            if (snapshot.empty && !this.isInitialSyncDone) {
-              // Brand new cloud database instance: seed local default catalog
-              this.isInitialSyncDone = true;
-              const seedItems = localItemsProvider();
-              if (seedItems.length > 0) {
-                console.log('[CloudSync] Firestore items collection is empty. Seeding initial data...');
-                await this.pushInitialDataToCloud(seedItems, localTransactionsProvider());
-                return;
-              }
-            }
-
             this.isInitialSyncDone = true;
             const remoteItems: InventoryItem[] = [];
             snapshot.forEach((d) => {
@@ -192,11 +180,10 @@ class CloudSyncService {
 
       // 2. Real-Time Streaming Listener on Transactions Collection (onSnapshot)
       const txCol = collection(firestore, COLLECTIONS.TRANSACTIONS);
-      const txQuery = query(txCol, limit(500));
+      const txQuery = query(txCol, limit(1000));
       
       this.transactionsUnsubscribe = onSnapshot(
         txQuery,
-        { includeMetadataChanges: false },
         async (snapshot) => {
           try {
             const remoteTxs: Transaction[] = [];
@@ -331,6 +318,7 @@ class CloudSyncService {
       console.error('[CloudSync] Failed to sync item to cloud:', err);
       this.status = 'offline';
       this.notifySyncInfo();
+      throw err;
     }
   }
 
@@ -350,6 +338,7 @@ class CloudSyncService {
       console.error('[CloudSync] Failed to delete item from cloud:', err);
       this.status = 'offline';
       this.notifySyncInfo();
+      throw err;
     }
   }
 
@@ -369,6 +358,7 @@ class CloudSyncService {
       console.error('[CloudSync] Failed to sync transaction to cloud:', err);
       this.status = 'offline';
       this.notifySyncInfo();
+      throw err;
     }
   }
 
@@ -388,6 +378,7 @@ class CloudSyncService {
       console.error('[CloudSync] Failed to delete transaction from cloud:', err);
       this.status = 'offline';
       this.notifySyncInfo();
+      throw err;
     }
   }
 

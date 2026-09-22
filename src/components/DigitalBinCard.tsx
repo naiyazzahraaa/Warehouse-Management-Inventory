@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { doc, collection, query, where, onSnapshot } from 'firebase/firestore';
+import { firestore, COLLECTIONS } from '../services/firebase';
 import { 
   ArrowLeft, 
   Printer, 
@@ -56,36 +58,91 @@ export const DigitalBinCard: React.FC<DigitalBinCardProps> = ({
 
   useEffect(() => {
     setItem(initialItem);
-    loadCardData(initialItem);
+    setIsLoading(true);
+    let isMounted = true;
 
-    // Real-time listener: immediately update card when transactions or stock mutate in Firestore
-    const unsubscribe = db.subscribe(() => {
-      loadCardData(initialItem);
+    // Generate QR
+    generateQrDataUrl(initialItem.material_code, { width: 300, margin: 1 })
+      .then((url) => {
+        if (isMounted) setQrDataUrl(url);
+      })
+      .catch(console.error);
+
+    // 1. Real-time Firestore onSnapshot for this specific Item
+    const unsubItem = onSnapshot(
+      doc(firestore, COLLECTIONS.ITEMS, initialItem.id),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const fresh = docSnap.data() as InventoryItem;
+          if (isMounted) {
+            setItem({
+              ...fresh,
+              id: docSnap.id || fresh.id,
+              unit: formatUnit(fresh.unit),
+            });
+            setIsLoading(false);
+          }
+        }
+      },
+      (err) => {
+        console.warn('[DigitalBinCard] Item onSnapshot fallback to local:', err);
+        db.getItemById(initialItem.id).then((fresh) => {
+          if (fresh && isMounted) setItem(fresh);
+        });
+      }
+    );
+
+    // 2. Real-time Firestore onSnapshot for Transactions belonging to this item
+    const qTx = query(
+      collection(firestore, COLLECTIONS.TRANSACTIONS),
+      where('item_id', '==', initialItem.id)
+    );
+
+    const unsubTx = onSnapshot(
+      qTx,
+      (snapshot) => {
+        const txList: Transaction[] = [];
+        snapshot.forEach((docSnap) => {
+          const t = docSnap.data() as Transaction;
+          if (t) {
+            txList.push({ ...t, id: docSnap.id || t.id });
+          }
+        });
+        // Sort descending by date
+        txList.sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime());
+        if (isMounted) {
+          setTransactions(txList);
+          setIsLoading(false);
+        }
+      },
+      (err) => {
+        console.warn('[DigitalBinCard] Transactions onSnapshot fallback to local:', err);
+        db.getItemTransactions(initialItem.id).then((txList) => {
+          if (isMounted) {
+            setTransactions(txList);
+            setIsLoading(false);
+          }
+        });
+      }
+    );
+
+    // 3. Subscribe to local DB updates
+    const unsubDb = db.subscribe(async () => {
+      const fresh = await db.getItemById(initialItem.id);
+      const txList = await db.getItemTransactions(initialItem.id);
+      if (isMounted) {
+        if (fresh) setItem(fresh);
+        setTransactions(txList);
+      }
     });
 
     return () => {
-      unsubscribe();
+      isMounted = false;
+      unsubItem();
+      unsubTx();
+      unsubDb();
     };
   }, [initialItem]);
-
-  const loadCardData = async (targetItem: InventoryItem) => {
-    setIsLoading(true);
-    try {
-      // Reload fresh item in case stock was mutated
-      const fresh = await db.getItemById(targetItem.id);
-      if (fresh) setItem(fresh);
-
-      const txList = await db.getItemTransactions(targetItem.id);
-      setTransactions(txList);
-
-      const url = await generateQrDataUrl(targetItem.material_code, { width: 300, margin: 1 });
-      setQrDataUrl(url);
-    } catch (err) {
-      console.error('Failed to load bin card data:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleDownloadQr = () => {
     if (qrDataUrl) {
@@ -615,7 +672,6 @@ export const DigitalBinCard: React.FC<DigitalBinCardProps> = ({
         onClose={() => setIsStoModalOpen(false)}
         onSuccess={(updatedItem) => {
           setItem(updatedItem);
-          loadCardData(updatedItem);
         }}
       />
     </div>

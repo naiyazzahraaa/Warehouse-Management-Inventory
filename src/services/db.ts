@@ -337,14 +337,7 @@ class WarehouseDB {
         await this.runUnitMigration();
         await this.cleanAndDeduplicateItems();
       } catch (err) {
-        console.warn('IndexedDB unavailable or blocked, falling back to memory storage:', err);
-        // Populate memory store with seed data
-        for (const item of SEED_ITEMS) {
-          this.memoryItems.set(item.id, { ...item, unit: formatUnit(item.unit) });
-        }
-        this.memoryTransactions = [...SEED_TRANSACTIONS];
-        await this.runUnitMigration();
-        await this.cleanAndDeduplicateItems();
+        console.warn('IndexedDB unavailable or blocked, using direct Firestore sync:', err);
       }
       this.isInitialized = true;
       this.initCloudSync();
@@ -575,17 +568,7 @@ class WarehouseDB {
   private async loadInitialData(): Promise<void> {
     if (!this.db) return;
     const items = await this.getAllFromStore<InventoryItem>(STORE_ITEMS);
-    if (items.length === 0) {
-      // Seed initial items
-      for (const item of SEED_ITEMS) {
-        await this.putToStore(STORE_ITEMS, item);
-        this.memoryItems.set(item.id, item);
-      }
-      for (const tx of SEED_TRANSACTIONS) {
-        await this.putToStore(STORE_TRANSACTIONS, tx);
-        this.memoryTransactions.push(tx);
-      }
-    } else {
+    if (items.length > 0) {
       for (const item of items) {
         // Auto-migrate legacy 'pcs' or 'ea' unit to standardized 'EA (Each)'
         const formatted = formatUnit(item.unit);
@@ -788,8 +771,8 @@ class WarehouseDB {
     this.memoryItems.set(newItem.id, newItem);
     await this.putToStore(STORE_ITEMS, newItem);
 
-    // Sync to Cloud Database in background
-    cloudSync.syncItemToCloud(newItem).catch((err) => console.warn('[CloudSync] syncItemToCloud error:', err));
+    // Direct write to Cloud Firestore
+    await cloudSync.syncItemToCloud(newItem);
     this.notifyDataChanged();
 
     // If initial stock > 0, log initial IN transaction
@@ -844,8 +827,8 @@ class WarehouseDB {
     this.memoryItems.set(id, updatedItem);
     await this.putToStore(STORE_ITEMS, updatedItem);
 
-    // Sync to Cloud Database
-    cloudSync.syncItemToCloud(updatedItem).catch((err) => console.warn('[CloudSync] updateItem sync error:', err));
+    // Direct write to Cloud Firestore
+    await cloudSync.syncItemToCloud(updatedItem);
     this.notifyDataChanged();
 
     return updatedItem;
@@ -859,8 +842,8 @@ class WarehouseDB {
     this.memoryItems.delete(id);
     await this.deleteFromStore(STORE_ITEMS, id);
 
-    // Sync deletion to Cloud Database
-    cloudSync.syncDeleteItemFromCloud(id).catch((err) => console.warn('[CloudSync] deleteItem sync error:', err));
+    // Direct delete from Cloud Firestore
+    await cloudSync.syncDeleteItemFromCloud(id);
 
     this.notifyDataChanged();
 
@@ -875,6 +858,7 @@ class WarehouseDB {
         for (const t of all) {
           if (t.item_id === id) {
             store.delete(t.id);
+            cloudSync.syncDeleteTransactionFromCloud(t.id).catch(() => {});
           }
         }
       };
@@ -931,8 +915,8 @@ class WarehouseDB {
       this.memoryItems.set(item.id, updatedItem);
       await this.putToStore(STORE_ITEMS, updatedItem);
 
-      // Push updated stock level to cloud
-      cloudSync.syncItemToCloud(updatedItem).catch((err) => console.warn('[CloudSync] syncItemToCloud error:', err));
+      // Direct write updated stock to Firestore
+      await cloudSync.syncItemToCloud(updatedItem);
     }
 
     const txRecord: Transaction = {
@@ -953,8 +937,8 @@ class WarehouseDB {
     this.memoryTransactions.unshift(txRecord);
     await this.putToStore(STORE_TRANSACTIONS, txRecord);
 
-    // Push transaction to Cloud Database
-    cloudSync.syncTransactionToCloud(txRecord).catch((err) => console.warn('[CloudSync] syncTransactionToCloud error:', err));
+    // Direct write transaction to Cloud Firestore
+    await cloudSync.syncTransactionToCloud(txRecord);
 
     // Immediately notify all active components (Dashboard, History, Bin Card) for zero delay
     this.notifyDataChanged();
@@ -1016,7 +1000,7 @@ class WarehouseDB {
 
       this.memoryItems.set(item.id, updatedItem);
       await this.putToStore(STORE_ITEMS, updatedItem);
-      cloudSync.syncItemToCloud(updatedItem).catch((err) => console.warn('[CloudSync] updateItem error:', err));
+      await cloudSync.syncItemToCloud(updatedItem);
     }
 
     const updatedTx: Transaction = {
@@ -1033,7 +1017,7 @@ class WarehouseDB {
     this.memoryTransactions[txIndex] = updatedTx;
     await this.putToStore(STORE_TRANSACTIONS, updatedTx);
 
-    cloudSync.syncTransactionToCloud(updatedTx).catch((err) => console.warn('[CloudSync] updateTx error:', err));
+    await cloudSync.syncTransactionToCloud(updatedTx);
     this.notifyDataChanged();
 
     return { transaction: updatedTx, item: updatedItem };
@@ -1068,15 +1052,15 @@ class WarehouseDB {
 
       this.memoryItems.set(item.id, updatedItem);
       await this.putToStore(STORE_ITEMS, updatedItem);
-      cloudSync.syncItemToCloud(updatedItem).catch((err) => console.warn('[CloudSync] syncItem error:', err));
+      await cloudSync.syncItemToCloud(updatedItem);
     }
 
     // Remove from memory transactions
     this.memoryTransactions.splice(txIndex, 1);
     await this.deleteFromStore(STORE_TRANSACTIONS, txId);
 
-    // Sync deletion to cloud Firestore
-    cloudSync.syncDeleteTransactionFromCloud(txId).catch((err) => console.warn('[CloudSync] deleteTx error:', err));
+    // Direct delete from Cloud Firestore
+    await cloudSync.syncDeleteTransactionFromCloud(txId);
     this.notifyDataChanged();
 
     return { success: true, item: updatedItem };
@@ -1107,9 +1091,7 @@ class WarehouseDB {
     this.memoryItems.set(itemId, updatedItem);
     await this.putToStore(STORE_ITEMS, updatedItem);
 
-    cloudSync.syncItemToCloud(updatedItem).catch((err) =>
-      console.warn('[CloudSync] syncItemToCloud low_stock_status error:', err)
-    );
+    await cloudSync.syncItemToCloud(updatedItem);
 
     this.notifyDataChanged();
     return updatedItem;
@@ -1138,9 +1120,7 @@ class WarehouseDB {
     this.memoryItems.set(itemId, updatedItem);
     await this.putToStore(STORE_ITEMS, updatedItem);
 
-    cloudSync.syncItemToCloud(updatedItem).catch((err) =>
-      console.warn('[CloudSync] syncItemToCloud low_stock_notes error:', err)
-    );
+    await cloudSync.syncItemToCloud(updatedItem);
 
     this.notifyDataChanged();
     return updatedItem;
@@ -1191,6 +1171,9 @@ class WarehouseDB {
     this.memoryTransactions.unshift(txRecord);
     await this.putToStore(STORE_TRANSACTIONS, txRecord);
 
+    // Direct write STO transaction to Firestore
+    await cloudSync.syncTransactionToCloud(txRecord);
+
     // 2. Perilaku Stock Sistem: Proses STO TIDAK langsung mengubah (menambah/mengurangi) stock aktif di sistem secara otomatis
     // current_stock TETAP bernilai previousStock, dan selisih tercatat di last_sto_diff
     const updatedItem: InventoryItem = {
@@ -1208,9 +1191,8 @@ class WarehouseDB {
     this.memoryItems.set(item.id, updatedItem);
     await this.putToStore(STORE_ITEMS, updatedItem);
 
-    cloudSync.syncItemToCloud(updatedItem).catch((err) =>
-      console.warn('[CloudSync] syncItemToCloud STO error:', err)
-    );
+    // Direct write item updates to Firestore
+    await cloudSync.syncItemToCloud(updatedItem);
 
     this.notifyDataChanged();
 
@@ -1416,7 +1398,7 @@ class WarehouseDB {
 
     // Push imported batch to cloud database
     if (validItems.length > 0) {
-      cloudSync.syncBatchItemsToCloud(validItems).catch((err) => console.warn('[CloudSync] syncBatchItemsToCloud error:', err));
+      await cloudSync.syncBatchItemsToCloud(validItems);
     }
 
     this.notifyDataChanged();

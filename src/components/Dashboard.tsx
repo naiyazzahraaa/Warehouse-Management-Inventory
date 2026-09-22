@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { firestore, COLLECTIONS } from '../services/firebase';
 import { useCloudSync } from '../hooks/useCloudSync';
 import { 
   Boxes, 
@@ -76,34 +78,115 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [noteStatus, setNoteStatus] = useState<LowStockActionStatus>('MINIMUM');
   const [isSavingNote, setIsSavingNote] = useState(false);
 
-  const loadDashboardData = async () => {
-    try {
-      const stats = await db.getStockSummary();
-      setSummary(stats);
-
-      const recentTx = await db.getRecentTransactions(8);
-      setRecentTransactions(recentTx);
-
-      const { items: lowItems } = await db.getItems({ stockFilter: 'low', pageSize: 25 });
-      setCriticalItems(lowItems);
-
-      if (user) {
-        const myTxs = await db.getUserTransactions(user.username, user.name);
-        setUserTxCount(myTxs.length);
-      }
-    } catch (err) {
-      console.error('Failed to load dashboard data:', err);
-    }
-  };
-
+  // Real-time Firestore onSnapshot listeners with automatic cleanup
   useEffect(() => {
-    loadDashboardData();
-    // Real-time automatic synchronization without manual refresh
-    const unsubscribe = db.subscribe(() => {
-      loadDashboardData();
+    let isMounted = true;
+
+    // 1. Real-time items listener for stock summaries and critical low-stock items
+    const unsubItems = onSnapshot(
+      collection(firestore, COLLECTIONS.ITEMS),
+      (snapshot) => {
+        let totalItems = 0;
+        let totalStock = 0;
+        let outOfStock = 0;
+        let lowStock = 0;
+        let fpaCount = 0;
+        let nonFpaCount = 0;
+        const lowItems: InventoryItem[] = [];
+
+        snapshot.forEach((docSnap) => {
+          const item = docSnap.data() as InventoryItem;
+          if (item) {
+            totalItems++;
+            const stock = item.current_stock ?? 0;
+            const min = item.min_stock ?? 0;
+            totalStock += stock;
+            if (stock <= 0) {
+              outOfStock++;
+              lowItems.push({ ...item, id: docSnap.id || item.id, unit: formatUnit(item.unit) });
+            } else if (stock <= min) {
+              lowStock++;
+              lowItems.push({ ...item, id: docSnap.id || item.id, unit: formatUnit(item.unit) });
+            }
+
+            const fpa = (item.fpa_type || 'NON_FPA').toUpperCase();
+            if (fpa === 'FPA' || fpa.includes('KONTRAK')) {
+              fpaCount++;
+            } else {
+              nonFpaCount++;
+            }
+          }
+        });
+
+        if (isMounted) {
+          setSummary({
+            total_items: totalItems,
+            total_stock: totalStock,
+            out_of_stock_items: outOfStock,
+            low_stock_items: lowStock,
+            fpa_items_count: fpaCount,
+            non_fpa_items_count: nonFpaCount,
+          });
+          setCriticalItems(lowItems.slice(0, 25));
+        }
+      },
+      (err) => {
+        console.warn('[Dashboard] Items onSnapshot fallback to local DB:', err);
+        db.getStockSummary().then((st) => isMounted && setSummary(st));
+        db.getItems({ stockFilter: 'low', pageSize: 25 }).then((res) => isMounted && setCriticalItems(res.items));
+      }
+    );
+
+    // 2. Real-time transactions listener for recent activity
+    const qTx = query(
+      collection(firestore, COLLECTIONS.TRANSACTIONS),
+      orderBy('transaction_date', 'desc'),
+      limit(50)
+    );
+    const unsubTx = onSnapshot(
+      qTx,
+      (snapshot) => {
+        const txs: Transaction[] = [];
+        let myCount = 0;
+        const cleanUser = user?.username?.toLowerCase() || '';
+        const cleanName = user?.name?.toLowerCase() || '';
+
+        snapshot.forEach((docSnap) => {
+          const t = docSnap.data() as Transaction;
+          if (t) {
+            txs.push({ ...t, id: docSnap.id || t.id });
+            if (
+              cleanUser &&
+              ((t.operator_username && t.operator_username.toLowerCase() === cleanUser) ||
+                (t.pic_name && t.pic_name.toLowerCase().includes(cleanName)))
+            ) {
+              myCount++;
+            }
+          }
+        });
+
+        if (isMounted) {
+          setRecentTransactions(txs.slice(0, 8));
+          setUserTxCount(myCount);
+        }
+      },
+      (err) => {
+        console.warn('[Dashboard] Transactions onSnapshot fallback:', err);
+        db.getRecentTransactions(8).then((tx) => isMounted && setRecentTransactions(tx));
+      }
+    );
+
+    // 3. Also subscribe to local DB event bus as backup
+    const unsubLocal = db.subscribe(() => {
+      db.getStockSummary().then((st) => isMounted && setSummary(st));
+      db.getRecentTransactions(8).then((tx) => isMounted && setRecentTransactions(tx));
     });
+
     return () => {
-      unsubscribe();
+      isMounted = false;
+      unsubItems();
+      unsubTx();
+      unsubLocal();
     };
   }, [user]);
 

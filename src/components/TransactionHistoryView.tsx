@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { firestore, COLLECTIONS } from '../services/firebase';
 import {
   ArrowLeftRight,
   ArrowDownLeft,
@@ -39,28 +41,57 @@ export const TransactionHistoryView: React.FC<TransactionHistoryViewProps> = ({
   const [selectedTxForDelete, setSelectedTxForDelete] = useState<Transaction | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const loadTransactions = async (silent = false) => {
-    if (!silent) setIsLoading(true);
-
-    try {
-      const txs = await db.getRecentTransactions(300);
-      setTransactions(txs);
-    } catch (err) {
-      console.error('Failed to load transactions:', err);
-    } finally {
-      if (!silent) setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
-    loadTransactions();
+    setIsLoading(true);
+    let isMounted = true;
 
-    const unsubscribe = db.subscribe(() => {
-      loadTransactions(true);
+    // Real-time Firestore onSnapshot listener for transactions
+    const q = query(
+      collection(firestore, COLLECTIONS.TRANSACTIONS),
+      orderBy('transaction_date', 'desc'),
+      limit(500)
+    );
+
+    const unsubscribeFirestore = onSnapshot(
+      q,
+      (snapshot) => {
+        const txs: Transaction[] = [];
+        snapshot.forEach((docSnap) => {
+          const t = docSnap.data() as Transaction;
+          if (t) {
+            txs.push({
+              ...t,
+              id: docSnap.id || t.id,
+            });
+          }
+        });
+        if (isMounted) {
+          setTransactions(txs);
+          setIsLoading(false);
+        }
+      },
+      (error) => {
+        console.warn('[TransactionHistoryView] Firestore onSnapshot error, falling back to local:', error);
+        db.getRecentTransactions(300).then((localTxs) => {
+          if (isMounted) {
+            setTransactions(localTxs);
+            setIsLoading(false);
+          }
+        });
+      }
+    );
+
+    const unsubscribeDb = db.subscribe(async () => {
+      const localTxs = await db.getRecentTransactions(300);
+      if (isMounted) {
+        setTransactions(localTxs);
+      }
     });
 
     return () => {
-      unsubscribe();
+      isMounted = false;
+      unsubscribeFirestore();
+      unsubscribeDb();
     };
   }, [refreshTrigger]);
 
@@ -131,7 +162,6 @@ export const TransactionHistoryView: React.FC<TransactionHistoryViewProps> = ({
     try {
       await db.deleteTransaction(selectedTxForDelete.id);
       setSelectedTxForDelete(null);
-      await loadTransactions(true);
     } catch (err: any) {
       console.error('Failed to delete transaction:', err);
       alert(err.message || 'Gagal menghapus transaksi.');
@@ -393,7 +423,7 @@ export const TransactionHistoryView: React.FC<TransactionHistoryViewProps> = ({
             setSelectedTxForEdit(null);
           }}
           onSuccess={() => {
-            loadTransactions(true);
+            // Updated automatically via real-time onSnapshot
           }}
         />
       )}
