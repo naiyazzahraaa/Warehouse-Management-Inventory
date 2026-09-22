@@ -289,7 +289,15 @@ class WarehouseDB {
   private memoryItems: Map<string, InventoryItem> = new Map();
   private memoryTransactions: Transaction[] = [];
   private isInitialized = false;
+  private initPromise: Promise<void> | null = null;
   private listeners: Array<() => void> = [];
+
+  constructor() {
+    // Automatically propagate cloudSync data changes (remote device & cross-tab) to all DB listeners
+    cloudSync.subscribeDataChanges(() => {
+      this.notifyDataChanged();
+    });
+  }
 
   subscribe(listener: () => void): () => void {
     this.listeners.push(listener);
@@ -320,24 +328,29 @@ class WarehouseDB {
 
   async init(): Promise<void> {
     if (this.isInitialized) return;
+    if (this.initPromise) return this.initPromise;
 
-    try {
-      this.db = await this.openDatabase();
-      await this.loadInitialData();
-      await this.runUnitMigration();
-      await this.cleanAndDeduplicateItems();
-    } catch (err) {
-      console.warn('IndexedDB unavailable or blocked, falling back to memory storage:', err);
-      // Populate memory store with seed data
-      for (const item of SEED_ITEMS) {
-        this.memoryItems.set(item.id, { ...item, unit: formatUnit(item.unit) });
+    this.initPromise = (async () => {
+      try {
+        this.db = await this.openDatabase();
+        await this.loadInitialData();
+        await this.runUnitMigration();
+        await this.cleanAndDeduplicateItems();
+      } catch (err) {
+        console.warn('IndexedDB unavailable or blocked, falling back to memory storage:', err);
+        // Populate memory store with seed data
+        for (const item of SEED_ITEMS) {
+          this.memoryItems.set(item.id, { ...item, unit: formatUnit(item.unit) });
+        }
+        this.memoryTransactions = [...SEED_TRANSACTIONS];
+        await this.runUnitMigration();
+        await this.cleanAndDeduplicateItems();
       }
-      this.memoryTransactions = [...SEED_TRANSACTIONS];
-      await this.runUnitMigration();
-      await this.cleanAndDeduplicateItems();
-    }
-    this.isInitialized = true;
-    this.initCloudSync();
+      this.isInitialized = true;
+      this.initCloudSync();
+    })();
+
+    return this.initPromise;
   }
 
   /**

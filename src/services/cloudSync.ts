@@ -5,7 +5,6 @@ import {
   deleteDoc, 
   onSnapshot, 
   query, 
-  orderBy, 
   limit, 
   writeBatch,
   Unsubscribe
@@ -25,13 +24,27 @@ class CloudSyncService {
   private syncListeners: Set<SyncListener> = new Set();
   private dataChangeListeners: Set<DataChangeListener> = new Set();
   private isInitialSyncDone = false;
-  private isProcessingRemoteSnapshot = false;
+  private broadcastChannel: BroadcastChannel | null = null;
 
   constructor() {
     // Monitor online/offline status
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => this.handleNetworkChange(true));
       window.addEventListener('offline', () => this.handleNetworkChange(false));
+
+      // Instant cross-tab communication on the same device
+      if ('BroadcastChannel' in window) {
+        try {
+          this.broadcastChannel = new BroadcastChannel('warehouse_inventory_sync');
+          this.broadcastChannel.onmessage = (event) => {
+            if (event.data?.type === 'DATA_MUTATED') {
+              this.notifyDataChanges();
+            }
+          };
+        } catch (e) {
+          console.warn('[CloudSync] BroadcastChannel not available:', e);
+        }
+      }
     }
   }
 
@@ -59,7 +72,7 @@ class CloudSyncService {
     });
   }
 
-  private notifyDataChanges(): void {
+  notifyDataChanges(): void {
     this.dataChangeListeners.forEach((fn) => {
       try {
         fn();
@@ -67,6 +80,16 @@ class CloudSyncService {
         console.error('[CloudSync] Data change listener error:', e);
       }
     });
+  }
+
+  broadcastLocalMutation(): void {
+    try {
+      if (this.broadcastChannel) {
+        this.broadcastChannel.postMessage({ type: 'DATA_MUTATED', timestamp: Date.now() });
+      }
+    } catch (e) {
+      console.warn('[CloudSync] Broadcast error:', e);
+    }
   }
 
   getSyncInfo(): SyncInfo {
@@ -86,13 +109,12 @@ class CloudSyncService {
     } else {
       this.status = 'syncing';
       this.notifySyncInfo();
-      this.initRealtimeListeners();
     }
   }
 
   /**
    * Start real-time multi-device Firestore synchronization using streaming onSnapshot() listeners.
-   * Completely avoids stale client cache and static getDocs calls so every device receives live updates immediately.
+   * Ensures every device and browser tab receives live updates immediately.
    */
   async startSync(
     localItemsProvider: () => InventoryItem[],
@@ -115,9 +137,6 @@ class CloudSyncService {
       this.itemsUnsubscribe = onSnapshot(
         itemsCol,
         async (snapshot) => {
-          if (this.isProcessingRemoteSnapshot) return;
-          this.isProcessingRemoteSnapshot = true;
-
           try {
             if (snapshot.empty && !this.isInitialSyncDone) {
               // Brand new cloud database instance: seed local default catalog
@@ -134,8 +153,11 @@ class CloudSyncService {
             const remoteItems: InventoryItem[] = [];
             snapshot.forEach((d) => {
               const data = d.data() as InventoryItem;
-              if (data && data.id) {
-                remoteItems.push(data);
+              if (data) {
+                remoteItems.push({
+                  ...data,
+                  id: data.id || d.id,
+                });
               }
             });
 
@@ -157,8 +179,6 @@ class CloudSyncService {
             this.notifyDataChanges();
           } catch (err: any) {
             console.error('[CloudSync] Error in items onSnapshot handler:', err);
-          } finally {
-            this.isProcessingRemoteSnapshot = false;
           }
         },
         (err) => {
@@ -171,7 +191,7 @@ class CloudSyncService {
 
       // 2. Real-Time Streaming Listener on Transactions Collection (onSnapshot)
       const txCol = collection(firestore, COLLECTIONS.TRANSACTIONS);
-      const txQuery = query(txCol, orderBy('transaction_date', 'desc'), limit(300));
+      const txQuery = query(txCol, limit(500));
       
       this.transactionsUnsubscribe = onSnapshot(
         txQuery,
@@ -180,9 +200,19 @@ class CloudSyncService {
             const remoteTxs: Transaction[] = [];
             snapshot.forEach((d) => {
               const data = d.data() as Transaction;
-              if (data && data.id) {
-                remoteTxs.push(data);
+              if (data) {
+                remoteTxs.push({
+                  ...data,
+                  id: data.id || d.id,
+                });
               }
+            });
+
+            // In-memory sort by transaction date descending
+            remoteTxs.sort((a, b) => {
+              const dateA = new Date(a.transaction_date || a.created_at || 0).getTime();
+              const dateB = new Date(b.transaction_date || b.created_at || 0).getTime();
+              return dateB - dateA;
             });
 
             await onRemoteTransactionUpdate(remoteTxs);
@@ -196,8 +226,7 @@ class CloudSyncService {
           }
         },
         (err) => {
-          console.warn('[CloudSync] Transactions onSnapshot with orderBy warning, falling back to base collection:', err);
-          this.fallbackTransactionsListener(onRemoteTransactionUpdate);
+          console.warn('[CloudSync] Transactions onSnapshot listener warning:', err);
         }
       );
 
@@ -206,40 +235,6 @@ class CloudSyncService {
       this.status = 'offline';
       this.errorMessage = err?.message || 'Gagal terhubung ke Cloud Database';
       this.notifySyncInfo();
-    }
-  }
-
-  private fallbackTransactionsListener(onRemoteTransactionUpdate: (txs: Transaction[]) => Promise<void>) {
-    try {
-      const txCol = collection(firestore, COLLECTIONS.TRANSACTIONS);
-      this.transactionsUnsubscribe = onSnapshot(
-        txCol,
-        async (snapshot) => {
-          try {
-            const remoteTxs: Transaction[] = [];
-            snapshot.forEach((d) => {
-              const data = d.data() as Transaction;
-              if (data && data.id) {
-                remoteTxs.push(data);
-              }
-            });
-            remoteTxs.sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime());
-            await onRemoteTransactionUpdate(remoteTxs.slice(0, 300));
-
-            this.lastSyncedAt = new Date();
-            this.status = 'synced';
-            this.notifySyncInfo();
-            this.notifyDataChanges();
-          } catch (e) {
-            console.error('[CloudSync] Fallback transactions handler error:', e);
-          }
-        },
-        (err) => {
-          console.warn('[CloudSync] Fallback base transactions listener warning:', err);
-        }
-      );
-    } catch (e) {
-      console.error('[CloudSync] Error setting up fallback listener:', e);
     }
   }
 
@@ -266,7 +261,7 @@ class CloudSyncService {
       const items: InventoryItem[] = [];
       snapshot.forEach((d) => {
         const item = d.data() as InventoryItem;
-        if (item && item.id) items.push(item);
+        if (item) items.push({ ...item, id: item.id || d.id });
       });
       onUpdate(items);
     });
@@ -277,30 +272,16 @@ class CloudSyncService {
    */
   listenToTransactions(onUpdate: (txs: Transaction[]) => void): Unsubscribe {
     const txCol = collection(firestore, COLLECTIONS.TRANSACTIONS);
-    const txQuery = query(txCol, orderBy('transaction_date', 'desc'), limit(300));
-    return onSnapshot(
-      txQuery,
-      (snapshot) => {
-        const txs: Transaction[] = [];
-        snapshot.forEach((d) => {
-          const tx = d.data() as Transaction;
-          if (tx && tx.id) txs.push(tx);
-        });
-        onUpdate(txs);
-      },
-      () => {
-        // Fallback without orderBy
-        return onSnapshot(txCol, (snap) => {
-          const txs: Transaction[] = [];
-          snap.forEach((d) => {
-            const tx = d.data() as Transaction;
-            if (tx && tx.id) txs.push(tx);
-          });
-          txs.sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime());
-          onUpdate(txs);
-        });
-      }
-    );
+    const txQuery = query(txCol, limit(500));
+    return onSnapshot(txQuery, (snapshot) => {
+      const txs: Transaction[] = [];
+      snapshot.forEach((d) => {
+        const tx = d.data() as Transaction;
+        if (tx) txs.push({ ...tx, id: tx.id || d.id });
+      });
+      txs.sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime());
+      onUpdate(txs);
+    });
   }
 
   // Initial cloud seed
@@ -336,6 +317,7 @@ class CloudSyncService {
     try {
       this.status = 'syncing';
       this.notifySyncInfo();
+      this.broadcastLocalMutation();
 
       const ref = doc(firestore, COLLECTIONS.ITEMS, item.id);
       await setDoc(ref, item);
@@ -354,6 +336,7 @@ class CloudSyncService {
     try {
       this.status = 'syncing';
       this.notifySyncInfo();
+      this.broadcastLocalMutation();
 
       const ref = doc(firestore, COLLECTIONS.ITEMS, itemId);
       await deleteDoc(ref);
@@ -372,6 +355,7 @@ class CloudSyncService {
     try {
       this.status = 'syncing';
       this.notifySyncInfo();
+      this.broadcastLocalMutation();
 
       const ref = doc(firestore, COLLECTIONS.TRANSACTIONS, tx.id);
       await setDoc(ref, tx);
@@ -390,6 +374,7 @@ class CloudSyncService {
     try {
       this.status = 'syncing';
       this.notifySyncInfo();
+      this.broadcastLocalMutation();
 
       const ref = doc(firestore, COLLECTIONS.TRANSACTIONS, txId);
       await deleteDoc(ref);
@@ -408,6 +393,7 @@ class CloudSyncService {
     try {
       this.status = 'syncing';
       this.notifySyncInfo();
+      this.broadcastLocalMutation();
 
       // Chunk in groups of 400 for Firestore batch size limit
       const chunkSize = 400;
@@ -429,11 +415,6 @@ class CloudSyncService {
       this.status = 'offline';
       this.notifySyncInfo();
     }
-  }
-
-  private initRealtimeListeners() {
-    this.status = 'synced';
-    this.notifySyncInfo();
   }
 }
 
