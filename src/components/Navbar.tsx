@@ -1,7 +1,6 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, DEMO_USERS } from '../context/AuthContext';
-import { useCloudSync } from '../hooks/useCloudSync';
 import { 
   Boxes, 
   QrCode, 
@@ -11,11 +10,7 @@ import {
   LogOut, 
   ArrowRightLeft, 
   LayoutDashboard, 
-  PackageSearch,
-  Cloud,
-  RefreshCw,
-  WifiOff,
-  CheckCircle2
+  PackageSearch
 } from 'lucide-react';
 import { formatStandardRoleName } from '../utils/roleFormat';
 
@@ -24,7 +19,7 @@ interface NavbarProps {
   setActiveTab?: (tab: 'dashboard' | 'items' | 'transactions') => void;
   onOpenScanner: () => void;
   onOpenLoginModal: () => void;
-  onOpenSyncGuide: () => void;
+  onOpenSyncGuide?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -35,7 +30,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenSyncGuide,
 }) => {
   const { user, isSupervisor, isEvaluator, isStaff, isReviewer, logout } = useAuth();
-  const syncInfo = useCloudSync();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -122,45 +116,6 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Action Center: QR Scanner Button & User Role Info */}
           <div className="flex items-center gap-2 sm:gap-3">
             
-            {/* Real-time Cloud Sync & Multi-Device Button */}
-            <button
-              onClick={onOpenSyncGuide}
-              style={{
-                backgroundColor: syncInfo.status === 'synced' ? 'var(--nav-sync-bg)' : undefined,
-                color: syncInfo.status === 'synced' ? 'var(--nav-sync-text)' : undefined,
-                borderColor: syncInfo.status === 'synced' ? 'var(--nav-sync-border)' : undefined,
-              }}
-              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer ${
-                syncInfo.status === 'synced'
-                  ? 'hover:opacity-95'
-                  : syncInfo.status === 'syncing' || syncInfo.status === 'connecting'
-                  ? 'bg-amber-50 text-amber-950 border-amber-400 hover:bg-amber-100'
-                  : 'bg-slate-100 text-slate-900 border-slate-300 hover:bg-slate-200'
-              }`}
-              title="Status Sinkronisasi Cloud Multi-Perangkat (Firebase)"
-            >
-              {syncInfo.status === 'synced' ? (
-                <>
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                  </span>
-                  <Cloud className="w-3.5 h-3.5 text-emerald-600 hidden sm:inline" />
-                  <span className="text-[11px] sm:text-xs">Cloud Sync</span>
-                </>
-              ) : syncInfo.status === 'syncing' || syncInfo.status === 'connecting' ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 text-amber-600 animate-spin" />
-                  <span className="text-[11px] sm:text-xs">Menyinkronkan</span>
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="text-[11px] sm:text-xs">Offline</span>
-                </>
-              )}
-            </button>
-
             {/* Quick Scan QR Button */}
             <button
               id="navbar-scan-btn"
