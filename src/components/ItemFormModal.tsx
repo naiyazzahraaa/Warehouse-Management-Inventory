@@ -131,10 +131,14 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({
       setError('Material number (nomor material) harus diisi');
       return;
     }
-    if (cleanCode.length !== 18) {
-      setError(`Material number harus tepat 18 angka digit (saat ini ${cleanCode.length} digit). Sistem otomatis mengeliminasi nomor kurang/lebih dari 18 digit.`);
+    let finalCode = cleanCode;
+    if (cleanCode.length > 0 && cleanCode.length < 18) {
+      finalCode = cleanCode.padStart(18, '0');
+    } else if (cleanCode.length > 18) {
+      setError(`Material number tidak boleh lebih dari 18 digit (saat ini ${cleanCode.length} digit). Standar SAP adalah 18 digit.`);
       return;
     }
+
     if (!name.trim()) {
       setError('Nama barang harus diisi');
       return;
@@ -150,7 +154,7 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({
     try {
       if (isEdit && itemToEdit) {
         const updated = await db.updateItem(itemToEdit.id, {
-          material_code: cleanCode,
+          material_code: finalCode,
           name: name.trim(),
           category: finalCategory,
           fpa_type: fpaType,
@@ -163,7 +167,7 @@ export const ItemFormModal: React.FC<ItemFormModalProps> = ({
         onSuccess(updated);
       } else {
         const created = await db.addItem({
-          material_code: cleanCode,
+          material_code: finalCode,
           name: name.trim(),
           category: finalCategory,
           fpa_type: fpaType,

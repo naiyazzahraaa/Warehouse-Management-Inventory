@@ -875,17 +875,22 @@ class WarehouseDB {
 
     // If initial stock > 0, log initial IN transaction
     if (newItem.current_stock > 0) {
-      await this.recordTransaction({
-        item_id: newItem.id,
-        material_code: newItem.material_code,
-        item_name: newItem.name,
-        transaction_type: 'IN',
-        quantity: newItem.current_stock,
-        pic_name: 'Supervisor',
-        notes: 'Saldo stok awal pembukuan barang baru',
-        doc_ref: 'INIT-ENTRY',
-        skipStockUpdate: true,
-      });
+      try {
+        await this.recordTransaction({
+          item_id: newItem.id,
+          material_code: newItem.material_code,
+          item_name: newItem.name,
+          transaction_type: 'IN',
+          quantity: newItem.current_stock,
+          pic_name: 'Supervisor',
+          operator_username: 'supervisor',
+          notes: 'Saldo stok awal pembukuan barang baru',
+          doc_ref: 'INIT-ENTRY',
+          skipStockUpdate: true,
+        });
+      } catch (txErr) {
+        console.warn('[db.addItem] Failed to record initial transaction, but item was safely registered:', txErr);
+      }
     }
 
     return newItem;
@@ -1030,10 +1035,11 @@ class WarehouseDB {
       quantity: params.quantity,
       balance_after: newStock,
       pic_name: formatStandardRoleName(params.pic_name),
-      operator_username: params.operator_username,
+      operator_username: params.operator_username || 'supervisor',
       transaction_date: params.transaction_date || new Date().toISOString(),
       notes: params.notes || '-',
       doc_ref: params.doc_ref || '-',
+      created_at: new Date().toISOString(),
     };
 
     this.memoryTransactions.unshift(txRecord);
@@ -1264,10 +1270,11 @@ class WarehouseDB {
       quantity: physicalStock, // Jumlah fisik hasil audit
       balance_after: previousStock, // Perilaku stock sistem: saldo aktif TIDAK berubah otomatis
       pic_name: formatStandardRoleName(params.pic_name),
-      operator_username: params.operator_username,
+      operator_username: params.operator_username || 'supervisor',
       transaction_date: dateStr,
       notes: `[Stock Opname / STO] Fisik: ${physicalStock} ${item.unit} | Sistem: ${previousStock} ${item.unit} | Selisih: ${diffSign} ${item.unit} (${statusNote})${params.notes ? ` - ${params.notes}` : ''}`,
       doc_ref: params.doc_ref || `BA-STO-${new Date().toISOString().slice(0, 10)}`,
+      created_at: new Date().toISOString(),
     };
 
     this.memoryTransactions.unshift(txRecord);
@@ -1285,8 +1292,8 @@ class WarehouseDB {
       last_sto_by: formatStandardRoleName(params.pic_name),
       last_sto_diff: difference,
       last_sto_physical: physicalStock,
-      last_sto_doc: params.doc_ref,
-      last_sto_notes: params.notes,
+      last_sto_doc: params.doc_ref || '-',
+      last_sto_notes: params.notes || '-',
       updated_at: new Date().toISOString(),
     };
 

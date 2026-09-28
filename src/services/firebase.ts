@@ -32,13 +32,18 @@ export const firebaseApp = getApps().length > 0
     });
 
 // Initialize Firestore explicitly with memoryLocalCache so mobile/Safari does not retain stale IndexedDB cache
+// and ignoreUndefinedProperties: true to prevent Firestore throwing errors on optional fields
 export const firestore: Firestore = (() => {
   const dbId = firebaseConfig.firestoreDatabaseId || undefined;
+  const settings = { 
+    localCache: memoryLocalCache(),
+    ignoreUndefinedProperties: true,
+  };
   try {
     if (dbId) {
-      return initializeFirestore(firebaseApp, { localCache: memoryLocalCache() }, dbId);
+      return initializeFirestore(firebaseApp, settings, dbId);
     }
-    return initializeFirestore(firebaseApp, { localCache: memoryLocalCache() });
+    return initializeFirestore(firebaseApp, settings);
   } catch {
     return getFirestore(firebaseApp, dbId);
   }

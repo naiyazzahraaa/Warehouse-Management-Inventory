@@ -15,6 +15,25 @@ import { InventoryItem, Transaction, CloudSyncStatus, SyncInfo } from '../types'
 type SyncListener = (info: SyncInfo) => void;
 type DataChangeListener = () => void;
 
+/**
+ * Helper to strip undefined values recursively so Firestore setDoc / writeBatch never throws
+ * "Unsupported field value: undefined"
+ */
+export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
+  if (!obj || typeof obj !== 'object') return obj;
+  const cleaned: any = Array.isArray(obj) ? [] : {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+        cleaned[key] = cleanForFirestore(value);
+      } else {
+        cleaned[key] = value;
+      }
+    }
+  }
+  return cleaned;
+}
+
 class CloudSyncService {
   private status: CloudSyncStatus = 'connecting';
   private lastSyncedAt: Date | null = null;
@@ -285,12 +304,12 @@ class CloudSyncService {
       const itemsToSeed = items.slice(0, 300);
       for (const item of itemsToSeed) {
         const ref = doc(firestore, COLLECTIONS.ITEMS, item.id);
-        batch.set(ref, item);
+        batch.set(ref, cleanForFirestore(item));
       }
 
       for (const tx of transactions.slice(0, 50)) {
         const ref = doc(firestore, COLLECTIONS.TRANSACTIONS, tx.id);
-        batch.set(ref, tx);
+        batch.set(ref, cleanForFirestore(tx));
       }
 
       await batch.commit();
@@ -309,7 +328,7 @@ class CloudSyncService {
       this.broadcastLocalMutation();
 
       const ref = doc(firestore, COLLECTIONS.ITEMS, item.id);
-      await setDoc(ref, item);
+      await setDoc(ref, cleanForFirestore(item));
 
       this.lastSyncedAt = new Date();
       this.status = 'synced';
@@ -349,7 +368,7 @@ class CloudSyncService {
       this.broadcastLocalMutation();
 
       const ref = doc(firestore, COLLECTIONS.TRANSACTIONS, tx.id);
-      await setDoc(ref, tx);
+      await setDoc(ref, cleanForFirestore(tx));
 
       this.lastSyncedAt = new Date();
       this.status = 'synced';
@@ -395,7 +414,7 @@ class CloudSyncService {
         const batch = writeBatch(firestore);
         for (const it of chunk) {
           const ref = doc(firestore, COLLECTIONS.ITEMS, it.id);
-          batch.set(ref, it);
+          batch.set(ref, cleanForFirestore(it));
         }
         await batch.commit();
       }
